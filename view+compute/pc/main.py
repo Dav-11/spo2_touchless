@@ -8,9 +8,9 @@ BAUD = 115200
 
 # -------- REGEX --------
 pattern = re.compile(
-    r"r_ac:(?P<r_ac>[\d.]+), r_dc:(?P<r_dc>[\d.]+), "
-    r"g_ac:(?P<g_ac>[\d.]+), g_dc:(?P<g_dc>[\d.]+), "
-    r"b_ac:(?P<b_ac>[\d.]+), b_dc:(?P<b_dc>[\d.]+)"
+    r"\"r_ac\":(?P<r_ac>[\d.]+), \"r_dc\":(?P<r_dc>[\d.]+), "
+    r"\"g_ac\":(?P<g_ac>[\d.]+), \"g_dc\":(?P<g_dc>[\d.]+), "
+    r"\"b_ac\":(?P<b_ac>[\d.]+), \"b_dc\":(?P<b_dc>[\d.]+)"
 )
 
 # -------- SERIAL SETUP --------
