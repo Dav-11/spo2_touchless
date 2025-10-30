@@ -120,17 +120,17 @@ void extract_and_send_data(camera_fb_t *fb) {
   blueAC = sqrt(blueAC / BUFFER_LEN);
 
   // send over Serial []
-  Serial.print("{r_ac:");
+  Serial.print("{\"r_ac\":");
   Serial.print(redAC,2);
-  Serial.print(", r_dc:");
+  Serial.print(", \"r_dc\":");
   Serial.print(redDC,2);
-  Serial.print(", g_ac:");
+  Serial.print(", \"g_ac\":");
   Serial.print(greenAC,2);
-  Serial.print(", g_dc:");
+  Serial.print(", \"g_dc\":");
   Serial.print(greenDC,2);
-  Serial.print(", b_ac:");
+  Serial.print(", \"b_ac\":");
   Serial.print(blueAC,2);
-  Serial.print(", b_dc:");
+  Serial.print(", \"b_dc\":");
   Serial.print(blueDC,2);
   Serial.println("}");
 }
