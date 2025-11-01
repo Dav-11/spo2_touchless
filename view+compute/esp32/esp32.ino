@@ -138,20 +138,30 @@ void extract_and_send_data(camera_fb_t *fb, float fps) {
   redAC = sqrt(redAC / BUFFER_LEN);
   greenAC = sqrt(greenAC / BUFFER_LEN);
 
-  // send over Serial
-  Serial.print("{\"r_ac\":");
-  Serial.print(redAC,2);
-  Serial.print(", \"r_dc\":");
-  Serial.print(redDC,2);
-  Serial.print(", \"g_ac\":");
-  Serial.print(greenAC,2);
-  Serial.print(", \"g_dc\":");
-  Serial.print(greenDC,2);
-  Serial.print(", \"b_ac\":");
-  Serial.print(blueAC,2);
-  Serial.print(", \"b_dc\":");
-  Serial.print(blueDC,2);
-  Serial.println("}");
+  // send over Serial if buffer is full
+  if (bufferFull == 0) {
+
+    Serial.print("Waiting for buffer to fill... (");
+    Serial.print(bufferIndex - 1);
+    Serial.print("/");
+    Serial.print(BUFFER_LEN);
+    Serial.println(")");
+  } else {
+
+    Serial.print("{\"r_ac\":");
+    Serial.print(redAC,2);
+    Serial.print(", \"r_dc\":");
+    Serial.print(redDC,2);
+    Serial.print(", \"g_ac\":");
+    Serial.print(greenAC,2);
+    Serial.print(", \"g_dc\":");
+    Serial.print(greenDC,2);
+    // Serial.print(", \"b_ac\":");
+    // Serial.print(blueAC,2);
+    // Serial.print(", \"b_dc\":");
+    // Serial.print(blueDC,2);
+    Serial.println("}");
+  }
 }
 
 /*****************************
