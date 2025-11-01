@@ -1,8 +1,14 @@
-#include "esp_camera.h"
 #include <WiFi.h>
 #include <WebServer.h>   // Built-in lightweight HTTP server
+#include <math.h>
 
-// Camera model AI Thinker
+#include "esp_camera.h"
+#include "filters.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
 
@@ -21,52 +27,52 @@ const char* password = "GBAJ-dQrD-DaUh-wBT0";
 // ----------------- GLOBALS -----------------
 WebServer server(80);
 
+// filters configs
+float lpf_prev_val_g = 0.0;
+float lpf_prev_val_r = 0.0;
+float lpf_cut_freq_hz = 0.05;   //TODO: change
+
+BPFState bpf_prev_val_g = {0.0, 0.0, 0.0, 0.0};
+BPFState bpf_prev_val_r = {0.0, 0.0, 0.0, 0.0};
+float bpf_center_freq_hz = 0.0; //TODO: change
+float bpf_bandwidth_hz = 0.0;   //TODO: change
+
 // Rolling buffers for R/G/B
-float redBuffer[BUFFER_LEN];
-float greenBuffer[BUFFER_LEN];
-float blueBuffer[BUFFER_LEN];
 int bufferIndex = 0;
+int bufferFull = 0;
 
-// ----------------- UTILS -----------------
-void drawRectRGB565(uint8_t *buf, int w, int h, int x, int y, int rectW, int rectH, uint16_t color) {
-  for (int i = 0; i < rectW; i++) {
-    int top = (y * w + (x + i)) * 2;
-    int bottom = ((y + rectH - 1) * w + (x + i)) * 2;
-    buf[top] = color & 0xFF;
-    buf[top + 1] = color >> 8;
-    buf[bottom] = color & 0xFF;
-    buf[bottom + 1] = color >> 8;
-  }
-  for (int j = 0; j < rectH; j++) {
-    int left = ((y + j) * w + x) * 2;
-    int right = ((y + j) * w + (x + rectW - 1)) * 2;
-    buf[left] = color & 0xFF;
-    buf[left + 1] = color >> 8;
-    buf[right] = color & 0xFF;
-    buf[right + 1] = color >> 8;
-  }
-}
+float lpf_buffer_g[BUFFER_LEN];
+float lpf_buffer_r[BUFFER_LEN];
 
-float mean(const float* arr, int len) {
-  float sum = 0;
-  for(int i=0;i<len;i++) sum += arr[i];
-  return sum / len;
-}
+float bpf_buffer_g[BUFFER_LEN];
+float bpf_buffer_r[BUFFER_LEN];
 
-float stddev(const float* arr, int len, float avg) {
-  float sum = 0;
-  for(int i=0;i<len;i++) sum += (arr[i]-avg)*(arr[i]-avg);
-  return sqrt(sum / len);
-}
 
-// ----------------- DATA EXTRACTION -----------------
+// ROI queue (only stores pointers to frames)
+TaskHandle_t streamTaskHandle;
+TaskHandle_t roiTaskHandle;
 
-void extract_and_send_data(camera_fb_t *fb) {
+/*****************************
+ * Forward fn declarations
+ *****************************/
+
+void handleStream();
+void streamLoop(void *pvParameters);
+void roiLoop(void *pvParameters);
+
+/*****************************
+ * ROI DATA EXTRACTION
+ *****************************/
+
+void extract_and_send_data(camera_fb_t *fb, float fps) {
   
   // --- Compute mean RGB in ROI every frame ---
 
   // Compute mean RGB in ROI
-  long sumR = 0, sumG = 0, sumB = 0;
+  long sumR=0, sumG=0, sumB=0;
+  float lpf_r=0, lpf_g=0, lpf_b=0;
+  float bpf_r=0, bpf_g=0, bpf_b=0;
+
   int pixelCount = 0;
   
   for (int y = ROI_Y; y < ROI_Y + ROI_HEIGHT; y++) {
@@ -77,11 +83,11 @@ void extract_and_send_data(camera_fb_t *fb) {
       uint16_t pixel = fb->buf[i] | (fb->buf[i+1] << 8);
       uint8_t r = ((pixel >> 11) & 0x1F) << 3;
       uint8_t g = ((pixel >> 5) & 0x3F) << 2;
-      uint8_t b = (pixel & 0x1F) << 3;
+      // uint8_t b = (pixel & 0x1F) << 3;
       
       sumR += r;
       sumG += g;
-      sumB += b;
+      // sumB += b;
       
       pixelCount++;
     }
@@ -89,37 +95,50 @@ void extract_and_send_data(camera_fb_t *fb) {
 
   float meanR = sumR / (float)pixelCount;
   float meanG = sumG / (float)pixelCount;
-  float meanB = sumB / (float)pixelCount;
+  // float meanB = sumB / (float)pixelCount;
+
+  // LPF
+  lpf_g = LPF(meanG, fps, lpf_cut_freq_hz, &lpf_prev_val_g);
+  lpf_r = LPF(meanR, fps, lpf_cut_freq_hz, &lpf_prev_val_r);
+
+  // BPF
+  bpf_g = BPF(meanG, fps, bpf_center_freq_hz, bpf_bandwidth_hz, &bpf_prev_val_g);
+  bpf_r = BPF(meanR, fps, bpf_center_freq_hz, bpf_bandwidth_hz, &bpf_prev_val_r);
 
   // Update moving buffer
-  redBuffer[bufferIndex] = meanR;
-  greenBuffer[bufferIndex] = meanG;
-  blueBuffer[bufferIndex] = meanB;
+  lpf_buffer_g[bufferIndex] = lpf_g;
+  lpf_buffer_r[bufferIndex] = lpf_r;
+
+  bpf_buffer_g[bufferIndex] = bpf_g;
+  bpf_buffer_r[bufferIndex] = bpf_r;
+
+  if (!(bufferFull > 0)) {
+    if ((bufferIndex + 1) >= BUFFER_LEN) {
+      bufferFull = 1;
+    }
+  }
   bufferIndex = (bufferIndex + 1) % BUFFER_LEN;
 
-  // Compute DC (average) and AC (std deviation)
   float redDC = 0, greenDC = 0, blueDC = 0;
   float redAC = 0, greenAC = 0, blueAC = 0;
 
+  // Compute DC (average) using output from LPF
   for (int i = 0; i < BUFFER_LEN; i++) {
-    redDC += redBuffer[i];
-    greenDC += greenBuffer[i];
-    blueDC += blueBuffer[i];
+    greenDC += lpf_buffer_g[i];
+    redDC += lpf_buffer_r[i];
   }
   redDC /= BUFFER_LEN;
   greenDC /= BUFFER_LEN;
-  blueDC /= BUFFER_LEN;
 
+  // Compute AC (std deviation) using output from bandpass
   for (int i = 0; i < BUFFER_LEN; i++) {
-    redAC += pow(redBuffer[i] - redDC, 2);
-    greenAC += pow(greenBuffer[i] - greenDC, 2);
-    blueAC += pow(blueBuffer[i] - blueDC, 2);
+    greenAC += pow(bpf_buffer_g[i] - greenDC, 2);
+    redAC += pow(bpf_buffer_r[i] - redDC, 2);
   }
   redAC = sqrt(redAC / BUFFER_LEN);
   greenAC = sqrt(greenAC / BUFFER_LEN);
-  blueAC = sqrt(blueAC / BUFFER_LEN);
 
-  // send over Serial []
+  // send over Serial
   Serial.print("{\"r_ac\":");
   Serial.print(redAC,2);
   Serial.print(", \"r_dc\":");
@@ -135,46 +154,10 @@ void extract_and_send_data(camera_fb_t *fb) {
   Serial.println("}");
 }
 
-// ----------------- STREAM HANDLER -----------------
-void handleStream() {
-  WiFiClient client = server.client();
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-  client.println("Cache-Control: no-cache");
-  client.println("Connection: close");
-  client.println();
+/*****************************
+ * Main
+ *****************************/
 
-  while (client.connected()) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-      Serial.println("Frame capture failed");
-      continue;
-    }
-
-    // Draw ROI box (in red)
-    drawRectRGB565(fb->buf, fb->width, fb->height, ROI_X, ROI_Y, ROI_WIDTH, ROI_HEIGHT, 0xF800);
-
-    // Convert RGB565 → JPEG
-    uint8_t *jpgBuf = NULL;
-    size_t jpgLen = 0;
-    bool ok = frame2jpg(fb, 80, &jpgBuf, &jpgLen);
-    if (!ok) continue;
-
-    extract_and_send_data(fb);
-    esp_camera_fb_return(fb);
-
-
-    // Send MJPEG frame
-    client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", jpgLen);
-    client.write(jpgBuf, jpgLen);
-    client.print("\r\n");
-
-    free(jpgBuf);
-    delay(100); // ~10 FPS
-  }
-}
-
-// ----------------- SETUP -----------------
 void setup() {
   Serial.begin(SERIAL_BAUD);
   delay(1000);
@@ -226,6 +209,18 @@ void setup() {
   s->set_hmirror(s, 0);
   s->set_vflip(s, 0);
 
+  // Initialize buffers
+  for (int i = 0; i < BUFFER_LEN; i++) {
+    lpf_buffer_g[i] = 0;
+    lpf_buffer_r[i] = 0;
+
+    bpf_buffer_g[i] = 0;
+    bpf_buffer_r[i] = 0;
+  }
+
+  // start ROI loop
+  xTaskCreatePinnedToCore(roiLoop, "roiLoop", 4096, NULL, 1, &roiTaskHandle, 1);
+
   // ---- Connect Wi-Fi ----
   WiFi.begin(ssid, password);
   Serial.print("Connecting to Wi-Fi");
@@ -244,20 +239,168 @@ void setup() {
       "<img src='/stream' style='width:100%;'></body></html>");
   });
   server.begin();
-
   Serial.println("HTTP server started");
 
-  // Initialize buffers
-  for (int i = 0; i < BUFFER_LEN; i++) {
-    redBuffer[i] = 0;
-    greenBuffer[i] = 0;
-    blueBuffer[i] = 0;
-  }
+  // Start Stream Loop
+  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 0); // core 0
 
   Serial.println("Camera ready");
 }
 
-// ----------------- LOOP -----------------
-void loop() {
-  server.handleClient();
+void loop() {}
+
+/*****************************
+ * Concurrent loops declarations
+ *****************************/
+
+void streamLoop(void *pvParameters) {
+  while (true) {
+    // Capture and stream
+    server.handleClient();
+  }
+}
+
+void roiLoop(void *pvParameters) {
+  
+  static uint32_t last_time = 0;
+  static float fps = 0.0;
+
+  while (true) {
+    uint32_t now = millis();
+    if (last_time != 0) {
+      float dt = (now - last_time) / 1000.0f; // seconds per frame
+      if (dt > 0) fps = 1.0f / dt;
+    }
+    last_time = now;
+
+    // Process ROI or run data extraction
+    camera_fb_t *fb = esp_camera_fb_get();
+    extract_and_send_data(fb, fps);
+    esp_camera_fb_return(fb);
+    
+    vTaskDelay(pdMS_TO_TICKS(10)); // slower sampling
+  }
+}
+
+/*****************************
+ * HTTP Stream Handlers
+ *****************************/
+
+void drawRectRGB565(uint8_t *buf, int w, int h, int x, int y, int rectW, int rectH, uint16_t color) {
+  for (int i = 0; i < rectW; i++) {
+    int top = (y * w + (x + i)) * 2;
+    int bottom = ((y + rectH - 1) * w + (x + i)) * 2;
+    buf[top] = color & 0xFF;
+    buf[top + 1] = color >> 8;
+    buf[bottom] = color & 0xFF;
+    buf[bottom + 1] = color >> 8;
+  }
+  for (int j = 0; j < rectH; j++) {
+    int left = ((y + j) * w + x) * 2;
+    int right = ((y + j) * w + (x + rectW - 1)) * 2;
+    buf[left] = color & 0xFF;
+    buf[left + 1] = color >> 8;
+    buf[right] = color & 0xFF;
+    buf[right + 1] = color >> 8;
+  }
+}
+
+void handleStream() {
+  WiFiClient client = server.client();
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  client.println("Cache-Control: no-cache");
+  client.println("Connection: close");
+  client.println();
+
+  while (client.connected()) {
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) continue;
+
+    // Draw ROI on buffer
+    drawRectRGB565(fb->buf, fb->width, fb->height, ROI_X, ROI_Y, ROI_WIDTH, ROI_HEIGHT, 0xF800);
+
+    // Convert and send JPEG
+    uint8_t *jpgBuf = NULL;
+    size_t jpgLen = 0;
+    if (frame2jpg(fb, 80, &jpgBuf, &jpgLen)) {
+      client.printf("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", jpgLen);
+      client.write(jpgBuf, jpgLen);
+      client.print("\r\n");
+      free(jpgBuf);
+    }
+
+    esp_camera_fb_return(fb);
+    delay(100);
+  }
+}
+
+/*****************************
+ * Filters
+ *****************************/
+
+float LPF(float input, float fps, float cut_freq, float *prev_value) {
+  // fps: samples per second (sampling frequency)
+  // cut_freq: desired cutoff frequency in Hz
+  // prev_value: pointer to the previous filtered output
+
+  // Protect against invalid parameters
+  if (fps <= 0 || cut_freq <= 0) return input;
+
+  // Calculate RC (time constant)
+  float RC = 1.0f / (2.0f * M_PI * cut_freq);
+
+  // Calculate sampling period
+  float dt = 1.0f / fps;
+
+  // Compute alpha (filter coefficient)
+  float alpha = dt / (RC + dt);
+
+  // Apply low-pass filter formula
+  float output = *prev_value + alpha * (input - *prev_value);
+
+  // Update previous value
+  *prev_value = output;
+
+  return output;
+}
+
+float BPF(float input, float fps, float center_freq, float bandwidth, BPFState *s) {
+  // fps         = sampling rate (Hz)
+  // center_freq = center frequency (Hz)
+  // bandwidth   = bandwidth (Hz)
+  // s           = filter state (must persist between calls)
+
+  if (fps <= 0 || center_freq <= 0 || bandwidth <= 0) return input;
+
+  // Pre-warped values
+  float w0 = 2.0f * M_PI * center_freq / fps;
+  float alpha = sinf(w0) * sinhf(logf(2.0f) / 2.0f * bandwidth * w0 / sinf(w0));
+
+  // Coefficients for a constant skirt gain, peak gain = Q
+  float b0 = alpha;
+  float b1 = 0.0f;
+  float b2 = -alpha;
+  float a0 = 1.0f + alpha;
+  float a1 = -2.0f * cosf(w0);
+  float a2 = 1.0f - alpha;
+
+  // Normalize coefficients
+  b0 /= a0;
+  b1 /= a0;
+  b2 /= a0;
+  a1 /= a0;
+  a2 /= a0;
+
+  // Biquad difference equation
+  float output = b0 * input + b1 * s->x1 + b2 * s->x2
+                               - a1 * s->y1 - a2 * s->y2;
+
+  // Shift history
+  s->x2 = s->x1;
+  s->x1 = input;
+  s->y2 = s->y1;
+  s->y1 = output;
+
+  return output;
 }
