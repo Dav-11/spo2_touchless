@@ -13,12 +13,13 @@
 #include "camera_pins.h"
 
 // ----------------- CONFIG -----------------
-#define ROI_X       50    // top-left x of forehead ROI
-#define ROI_Y       10    // top-left y of forehead ROI
-#define ROI_WIDTH   40    // ROI width in pixels
-#define ROI_HEIGHT  40    // ROI height in pixels
+#define ROI_X       100   // top-left x of forehead ROI
+#define ROI_Y       50    // top-left y of forehead ROI
+#define ROI_WIDTH   65    // ROI width in pixels
+#define ROI_HEIGHT  65    // ROI height in pixels
 #define BUFFER_LEN  100   // Number of frames to keep in buffer (~8s at 10 FPS)
 #define SERIAL_BAUD 115200
+#define WAIT_TIME   100
 
 // Wi-Fi credentials
 const char* ssid = "iPhone";
@@ -34,8 +35,8 @@ float lpf_cut_freq_hz = 0.05;   //TODO: change
 
 BPFState bpf_prev_val_g = {0.0, 0.0, 0.0, 0.0};
 BPFState bpf_prev_val_r = {0.0, 0.0, 0.0, 0.0};
-float bpf_center_freq_hz = 0.0; //TODO: change
-float bpf_bandwidth_hz = 0.0;   //TODO: change
+float bpf_center_freq_hz = 2.0; //TODO: change
+float bpf_bandwidth_hz = 3.0;   //TODO: change
 
 // Rolling buffers for R/G/B
 int bufferIndex = 0;
@@ -341,7 +342,7 @@ void handleStream() {
     }
 
     esp_camera_fb_return(fb);
-    delay(100);
+    delay(WAIT_TIME);
   }
 }
 
