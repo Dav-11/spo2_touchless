@@ -10,6 +10,7 @@ import numpy as np
 PORT = "/dev/tty.usbserial-110"   # change if needed
 BAUD = 115200
 CAL_FILE = "spo2_calibration.csv"  # saved paired data (camera_R, spo2_ref)
+READINGS_FILE = "spo2_readings.csv"
 
 # -------- REGEX --------
 pattern = re.compile(
@@ -58,6 +59,15 @@ def save_calibration(ror, spo2_value):
 
     # retrain the model
     load_model()
+
+def save_ror(ratio_red, ratio_green, ror, spo2_value):
+    df_new = pd.DataFrame([[ratio_red, ratio_green, ror, spo2_value]], columns=["Ratio Red", "Ratio Green", "RoR", "SpO2_value"])
+    if os.path.exists(READINGS_FILE):
+        df_existing = pd.read_csv(READINGS_FILE)
+        df = pd.concat([df_existing, df_new], ignore_index=True)
+    else:
+        df = df_new
+    df.to_csv(READINGS_FILE, index=False)
 
 
 def calibration_mode(ror):
@@ -138,6 +148,8 @@ try:
             if model is not None:
                 spo2_pred = model.predict(np.array([[ror]]))[0]
                 output += f" → Estimated SpO₂ = {spo2_pred:.2f}%"
+
+                save_ror(ratio_red, ratio_green, last_ror, spo2_pred)
             else:
                 output += " (no calibration model)"
             print(output)
