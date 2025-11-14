@@ -1,0 +1,5 @@
+pyserial
+matplotlib
+pandas
+scikit-learn
+numpy
