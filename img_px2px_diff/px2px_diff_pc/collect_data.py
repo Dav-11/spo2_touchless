@@ -8,11 +8,11 @@ from datetime import datetime
 PORT = "/dev/tty.usbserial-110"
 BAUD = 115200
 
-STORAGE_BFFER_SIZE = 500
+STORAGE_BFFER_SIZE = 350
 
 ROI_W = 65
 ROI_H = 65
-BUFFER_LEN = 10
+BUFFER_LEN = 1
 POINT_SIZE = 2               # R,G
 FRAMEBLOCK_SIZE = BUFFER_LEN * ROI_H * ROI_W * POINT_SIZE
 
@@ -75,7 +75,7 @@ try:
 
                 print("Block received.")
                 print("Shape:", arr.shape)
-                print("Example point [frame0,0,0]:", arr[0,0,0])  # (R,G)
+                # print("Example point [frame0,0,0]:", arr[0,0,0])  # (R,G)
 
                 # ---- 4. store frames in rolling buffer ----
                 for frame in arr:
