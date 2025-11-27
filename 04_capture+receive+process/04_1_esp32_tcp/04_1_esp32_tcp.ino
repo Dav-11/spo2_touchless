@@ -1,7 +1,10 @@
 #include "esp_camera.h"
 #include "img_converters.h"
+
 #include <WiFi.h>
 #include "wifi_credentials.h" // contains WIFI_SSID and WIFI_PASSWORD
+#include "lwip/sockets.h"
+#include "lwip/opt.h"
 
 #define CAMERA_MODEL_AI_THINKER
 #include "camera_pins.h"
@@ -11,17 +14,17 @@
 #include "freertos/queue.h"
 
 // ----------------- CONFIG -----------------
-#define SERIAL_BAUD 250000 // (250000/10)/1024 ~ 24 KB/s
+#define SERIAL_BAUD 250000  // (250000/10)/1024 ~ 24 KB/s
 
-#define ROI_X       0     // top-left x of forehead ROI
-#define ROI_Y       0     // top-left y of forehead ROI
-#define ROI_WIDTH   160   // ROI width in pixels
-#define ROI_HEIGHT  120   // ROI height in pixels
+#define ROI_X       80      // top-left x of forehead ROI
+#define ROI_Y       60      // top-left y of forehead ROI
+#define ROI_WIDTH   160     // ROI width in pixels
+#define ROI_HEIGHT  120     // ROI height in pixels
 
 #define BUFFER_LEN  100
 
-#define WAIT_TIME_SAMPLE    200
-#define WAIT_TIME_SEND      10
+#define WAIT_TIME_SAMPLE      50
+#define WAIT_TIME_SEND_STALL  10
 
 const char*     HOST_IP     = "172.20.10.3";  // your PC IP
 const uint16_t  HOST_PORT   = 50000;            // any port you want
@@ -146,14 +149,14 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected! IP:");
+  Serial.print("\nWiFi connected! IP:");
   Serial.println(WiFi.localIP());
 
   // Connect to PC
   Serial.print("Connecting to host...");
   while (!client.connect(HOST_IP, HOST_PORT)) {
-      Serial.print(".");
-      delay(500);
+    Serial.print(".");
+    delay(500);
   }
   Serial.println("\nTCP connection established!");
 
@@ -172,6 +175,7 @@ void setup() {
 void loop() {
 
   uint8_t next = (head + 1) % BUFFER_LEN;
+  float hz = 0;
 
   if (next == tail) {
     
@@ -188,7 +192,12 @@ void loop() {
     // Compute sampling frequency
     sample_time[head] = 0;
     if (head > 0) {  // skip first sample
-      sample_time[head] = 1000.0 / (current_time - prev_time);  // Hz
+      hz = 1000.0 / (current_time - prev_time);  // Hz
+      
+      Serial.print("hz: ");
+      Serial.println(hz);
+      
+      sample_time[head] = hz;
     }
 
     prev_time = current_time;  // Update for next iteration
@@ -210,15 +219,9 @@ void streamLoop(void *pvParameters) {
 
     if (head == tail) {
       
-      // buffer empty => stall
-      Serial.print("[streamLoop] head: ");
-      Serial.print(head);
-      Serial.print(", tail: ");
-      Serial.println(tail);
-      
+      // buffer empty => stall      
       Serial.println("Empty buffer, skip");
-      
-      vTaskDelay(WAIT_TIME_SEND);
+      vTaskDelay(WAIT_TIME_SEND_STALL);
       continue;
     }
 
@@ -270,20 +273,13 @@ void send_frame(int index) {
     if (!client.connected()) return;
   }
 
-  // 1) Send block header
-  client.write((const uint8_t*)"FRAMEBLOCK", 10);
+  // 1) Send header
+  //client.write((const uint8_t*)"FRAMEBLOCK", 10);
 
-  // 2) Send pixel matrix
-  for (int ry = 0; ry < ROI_HEIGHT; ry++) {
-    for (int rx = 0; rx < ROI_WIDTH; rx++) {
-      client.write(frames[index][ry][rx].red);
-      client.write(frames[index][ry][rx].green);
-    }
-  }
+  // 2) Send entire ROI in one call (FASTEST)
+  size_t frame_size = ROI_WIDTH * ROI_HEIGHT * 2;
+  client.write((uint8_t*)frames[index], frame_size);
 
-  // 3) Send sampling frequency (float as binary)
+  // 3) Send sample frequency (float)
   client.write((uint8_t*)&sample_time[index], sizeof(float));
-
-  // Optional: flush to ensure it leaves buffer
-  client.flush();
 }
