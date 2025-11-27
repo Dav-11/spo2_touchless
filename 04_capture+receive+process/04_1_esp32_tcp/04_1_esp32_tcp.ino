@@ -226,7 +226,7 @@ void streamLoop(void *pvParameters) {
     }
 
     // send frame
-    send_frame(tail);
+    send_frame(tail, 1);
 
     // increment tail ptr
     tail = (tail + 1) % BUFFER_LEN;
@@ -265,7 +265,7 @@ void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index) {
  * Data transmit
  *****************************/
 
-void send_frame(int index) {
+void send_frame(int index, int frame_number) {
 
   if (!client.connected()) {
     Serial.println("Reconnecting TCP...");
@@ -273,11 +273,8 @@ void send_frame(int index) {
     if (!client.connected()) return;
   }
 
-  // 1) Send header
-  //client.write((const uint8_t*)"FRAMEBLOCK", 10);
-
   // 2) Send entire ROI in one call (FASTEST)
-  size_t frame_size = ROI_WIDTH * ROI_HEIGHT * 2;
+  size_t frame_size = ROI_WIDTH * ROI_HEIGHT * sizeof(Point) * frame_number;
   client.write((uint8_t*)frames[index], frame_size);
 
   // 3) Send sample frequency (float)
