@@ -9,16 +9,16 @@
 #include "freertos/queue.h"
 
 // ----------------- CONFIG -----------------
-#define SERIAL_BAUD 115200 // (115200/10)/1024 ~ 11 KB/s
+#define SERIAL_BAUD 250000 // (250000/10)/1024 ~ 24 KB/s
 
 #define ROI_X       0     // top-left x of forehead ROI
 #define ROI_Y       0     // top-left y of forehead ROI
 #define ROI_WIDTH   320   // ROI width in pixels
 #define ROI_HEIGHT  240   // ROI height in pixels
 
-#define BUFFER_LEN  25    // 25 x 320 x 240 x 2
+#define BUFFER_LEN  25    // 25 x 320 x 240 x 2 = 3840000 B
 
-#define WAIT_TIME   1000
+#define WAIT_TIME   500
 
 // ----------------- GLOBAL -----------------
 
