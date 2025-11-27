@@ -13,12 +13,12 @@
 
 #define ROI_X       0     // top-left x of forehead ROI
 #define ROI_Y       0     // top-left y of forehead ROI
-#define ROI_WIDTH   320   // ROI width in pixels
-#define ROI_HEIGHT  240   // ROI height in pixels
+#define ROI_WIDTH   160   // ROI width in pixels
+#define ROI_HEIGHT  120   // ROI height in pixels
 
-#define BUFFER_LEN  25    // 25 x 320 x 240 x 2 = 3840000 B
+#define BUFFER_LEN  100
 
-#define WAIT_TIME   500
+#define WAIT_TIME   1
 
 // ----------------- GLOBAL -----------------
 
@@ -128,7 +128,7 @@ void setup() {
   Serial.println("Camera ready");
 
   // Start Stream Loop
-  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 0); // pin to C0
+  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 1); // pin to C1
 
   Serial.println("Completed init");
 }
@@ -237,5 +237,3 @@ void send_frame(int index) {
   Serial.println(sample_time[index]);
   Serial.println("\n--- DONE ---");
 }
-
-
