@@ -16,8 +16,8 @@
 // ----------------- CONFIG -----------------
 #define SERIAL_BAUD 250000  // (250000/10)/1024 ~ 24 KB/s
 
-#define ROI_X       80      // top-left x of forehead ROI
-#define ROI_Y       60      // top-left y of forehead ROI
+#define ROI_X       0      // top-left x of forehead ROI
+#define ROI_Y       0      // top-left y of forehead ROI
 #define ROI_WIDTH   160     // ROI width in pixels
 #define ROI_HEIGHT  120     // ROI height in pixels
 
@@ -26,9 +26,6 @@
 #define WAIT_TIME_SAMPLE      50
 #define WAIT_TIME_SEND_STALL  10
 
-const char*     HOST_IP     = "172.20.10.3";  // your PC IP
-const uint16_t  HOST_PORT   = 50000;            // any port you want
-
 // ----------------- GLOBAL -----------------
 
 typedef struct {
@@ -36,7 +33,7 @@ typedef struct {
   uint8_t green;
 } Point;
 
-volatile Point (*frames)[ROI_HEIGHT][ROI_WIDTH];
+volatile uint16_t (*frames)[ROI_HEIGHT][ROI_WIDTH];
 volatile float sample_time[BUFFER_LEN];
 
 volatile int head = 0; // write index
@@ -50,6 +47,8 @@ WiFiClient client;
  * Forward fn declarations
  *****************************/
 void streamLoop(void *pvParameters);
+void samplingTask(void *pvParameters);
+
 void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index);
 void send_frame(int index);
 
@@ -75,8 +74,8 @@ void setup() {
   }
 
   // Malloc 
-  size_t total_size = sizeof(Point) * BUFFER_LEN * ROI_HEIGHT * ROI_WIDTH;
-  frames = (Point (*)[ROI_HEIGHT][ROI_WIDTH]) heap_caps_malloc(
+  size_t total_size = sizeof(uint16_t) * BUFFER_LEN * ROI_HEIGHT * ROI_WIDTH;
+  frames = (uint16_t (*)[ROI_HEIGHT][ROI_WIDTH]) heap_caps_malloc(
     total_size,
     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
   );
@@ -161,8 +160,21 @@ void setup() {
   Serial.println("\nTCP connection established!");
 
   // Start Stream Loop
-  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 1); // pin to C1
+  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 0); // pin to C0
   Serial.println("\nStarted stream loop");
+
+  // Start sampling task (Core 0)
+  xTaskCreatePinnedToCore(
+    samplingTask,
+    "samplingTask",
+    4096,
+    NULL,
+    2,          // higher priority than streamLoop
+    NULL,
+    1
+  );
+
+  Serial.println("Sampling task started");
 
   Serial.println("Completed init");
 }
@@ -173,45 +185,43 @@ void setup() {
  *****************************/
 
 void loop() {
+  vTaskDelay(pdMS_TO_TICKS(1000));  // nothing here, sampling is handled in its own task
+}
 
-  uint8_t next = (head + 1) % BUFFER_LEN;
-  float hz = 0;
+void samplingTask(void *pvParameters) {
+  TickType_t last_wake_time = xTaskGetTickCount();
+  const TickType_t sample_period = pdMS_TO_TICKS(WAIT_TIME_SAMPLE);
 
-  if (next == tail) {
-    
-    // buffer full -> capture faster than send
-    Serial.print("[loop] head: ");
-    Serial.print(head);
-    Serial.print(", tail: ");
-    Serial.println(tail);
-    Serial.println("ERROR: next = tail, skip");
-  } else {
-    
-    unsigned long current_time = millis();  // Current timestamp in ms
-  
-    // Compute sampling frequency
-    sample_time[head] = 0;
-    if (head > 0) {  // skip first sample
-      hz = 1000.0 / (current_time - prev_time);  // Hz
+  prev_time = millis();  // initialize timing
+
+  while (true) {
+
+    uint8_t next = (head + 1) % BUFFER_LEN;
+
+    if (next == tail) {
+      // buffer full → skip this sample
+      Serial.println("Sampling: buffer full, skipping frame");
+    } else {
       
-      Serial.print("hz: ");
-      Serial.println(hz);
-      
+      // ---- compute sampling frequency ----
+      unsigned long now = millis();
+      float hz = 1000.0f / (now - prev_time);
+      prev_time = now;
+
       sample_time[head] = hz;
+
+      // ---- capture frame ----
+      camera_fb_t *fb = esp_camera_fb_get();
+      extract_data_and_save_to_buffer(fb, head);
+      esp_camera_fb_return(fb);
+
+      // advance head ptr
+      head = next;
     }
 
-    prev_time = current_time;  // Update for next iteration
-
-    // extract BUFFER_LEN number of samples and saves to RAM
-    camera_fb_t *fb = esp_camera_fb_get();
-    extract_data_and_save_to_buffer(fb, head);
-    esp_camera_fb_return(fb);
-
-    // increment write ptr
-    head = next;
+    // Wait until next fixed period
+    vTaskDelayUntil(&last_wake_time, sample_period);
   }
-
-  delay(WAIT_TIME_SAMPLE);
 }
 
 void streamLoop(void *pvParameters) {
@@ -240,23 +250,16 @@ void streamLoop(void *pvParameters) {
 
 void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index) {
 
-  // --- Get frame in RGB888 format ---
-  uint8_t *buf = fb->buf; // RGB565 data
+  const uint8_t *src = fb->buf;
+  volatile uint16_t (*dst)[ROI_WIDTH] = (volatile uint16_t (*)[ROI_WIDTH]) frames[current_index];
 
-  // (65x65x2)/1024 ~ 8,5 KB
-  for (int y = ROI_Y; y < ROI_Y + ROI_HEIGHT; y++) {
-    for (int x = ROI_X; x < ROI_X + ROI_WIDTH; x++) {
+  size_t bytes_per_row = ROI_WIDTH * 2;      // RGB565 = 2 bytes/pixel
+  size_t fb_row_stride = fb->width * 2;      // bytes per camera row
 
-      int i = (y * fb->width + x) * 2; // RGB565 = 2 bytes
-      uint16_t pixel = buf[i] | (buf[i + 1] << 8);
+  for (int y = 0; y < ROI_HEIGHT; y++) {
 
-      // extract R and G components
-      uint8_t r = ((pixel >> 11) & 0x1F) << 3;
-      uint8_t g = ((pixel >> 5) & 0x3F) << 2;
-
-      frames[current_index][y - ROI_Y][x - ROI_X].red = r;
-      frames[current_index][y - ROI_Y][x - ROI_X].green = g;
-    }
+    const uint8_t *src_row = src + ((ROI_Y + y) * fb_row_stride) + ROI_X * 2;
+    memcpy((void*)dst[y], src_row, bytes_per_row);
   }
 }
 
@@ -268,15 +271,15 @@ void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index) {
 void send_frame(int index, int frame_number) {
 
   if (!client.connected()) {
-    Serial.println("Reconnecting TCP...");
     client.connect(HOST_IP, HOST_PORT);
     if (!client.connected()) return;
   }
 
-  // 2) Send entire ROI in one call (FASTEST)
-  size_t frame_size = ROI_WIDTH * ROI_HEIGHT * sizeof(Point) * frame_number;
-  client.write((uint8_t*)frames[index], frame_size);
+  size_t chunk_size = frame_number * ROI_WIDTH * ROI_HEIGHT * sizeof(uint16_t);
 
-  // 3) Send sample frequency (float)
+  // send frame
+  client.write((uint8_t*)frames[index], chunk_size);
+
+  // Send sample frequency
   client.write((uint8_t*)&sample_time[index], sizeof(float));
 }
