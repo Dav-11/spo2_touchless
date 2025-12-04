@@ -9,11 +9,11 @@ import cv2  # OpenCV for video writing
 HOST = '0.0.0.0'
 PORT = 50000
 
-ROI_WIDTH = 160
-ROI_HEIGHT = 120
+ROI_WIDTH = 64
+ROI_HEIGHT = 64
 POINT_SIZE = 2  # RGB565 = 2 bytes
 FRAMES_PER_CHUNK = 1
-MAX_FRAMES = 99
+MAX_FRAMES = 350
 
 BASE_FILE_NAME = 'frames_rg_888'
 now_str = datetime.now().strftime("%Y%m%d_%H%M%S")

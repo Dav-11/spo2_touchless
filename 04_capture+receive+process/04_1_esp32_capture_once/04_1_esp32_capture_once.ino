@@ -18,10 +18,10 @@
 
 #define ROI_X       0      // top-left x of forehead ROI
 #define ROI_Y       0      // top-left y of forehead ROI
-#define ROI_WIDTH   160     // ROI width in pixels
-#define ROI_HEIGHT  120     // ROI height in pixels
+#define ROI_WIDTH   64     // ROI width in pixels
+#define ROI_HEIGHT  64     // ROI height in pixels
 
-#define BUFFER_LEN  100
+#define BUFFER_LEN  351
 
 #define WAIT_TIME_SAMPLE      50
 
