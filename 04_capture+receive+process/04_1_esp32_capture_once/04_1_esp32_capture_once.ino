@@ -24,7 +24,6 @@
 #define BUFFER_LEN  100
 
 #define WAIT_TIME_SAMPLE      50
-#define WAIT_TIME_SEND_STALL  10
 
 // ----------------- GLOBAL -----------------
 
@@ -35,17 +34,18 @@ volatile int head = 0; // write index
 volatile int tail = 0; // read index
 
 volatile unsigned long prev_time = 0;
+volatile bool sampling_active = false;
 
 WiFiClient client;
 
 /*****************************
  * Forward fn declarations
  *****************************/
-void streamLoop(void *pvParameters);
 void samplingTask(void *pvParameters);
 
 void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index);
 void send_frame(int index);
+void send_full_buffer();
 
 /*****************************
  * Task declarations
@@ -82,6 +82,21 @@ void setup() {
 
   Serial.println("Allocated frames in PSRAM!");
   Serial.printf("Free PSRAM: %d bytes\n", ESP.getFreePsram());
+
+  // connect to wifi
+  Serial.print("Connecting to WiFi (SSID: ");
+  Serial.print(WIFI_SSID);
+  Serial.print(", PASS: ");
+  Serial.print(WIFI_PASSWORD);
+  Serial.println(")...");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.print("\nWiFi connected! IP:");
+  Serial.println(WiFi.localIP());
 
   // ---- Camera init ----
   camera_config_t config;
@@ -132,45 +147,18 @@ void setup() {
   
   Serial.println("Camera ready");
 
-  Serial.print("Connecting to WiFi (SSID: ");
-  Serial.print(WIFI_SSID);
-  Serial.print(", PASS: ");
-  Serial.print(WIFI_PASSWORD);
-  Serial.println(")...");
-
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.print("\nWiFi connected! IP:");
-  Serial.println(WiFi.localIP());
-
-  // Connect to PC
-  Serial.print("Connecting to host...");
-  while (!client.connect(HOST_IP, HOST_PORT)) {
-    Serial.print(".");
-    delay(500);
-  }
-  Serial.println("\nTCP connection established!");
-
-  // Start Stream Loop
-  xTaskCreatePinnedToCore(streamLoop, "streamLoop", 4096, NULL, 1, &streamTaskHandle, 0); // pin to C0
-  Serial.println("\nStarted stream loop");
-
-  // Start sampling task (Core 0)
+  // Start sampling task (Core 1)
   xTaskCreatePinnedToCore(
     samplingTask,
     "samplingTask",
     4096,
     NULL,
-    2,          // higher priority than streamLoop
+    2,
     NULL,
     1
   );
 
   Serial.println("Sampling task started");
-
   Serial.println("Completed init");
 }
 
@@ -191,50 +179,53 @@ void samplingTask(void *pvParameters) {
 
   while (true) {
 
-    uint8_t next = (head + 1) % BUFFER_LEN;
+    if (sampling_active) {
 
-    if (next == tail) {
-      // buffer full → skip this sample
-      Serial.println("Sampling: buffer full, skipping frame");
+      uint8_t next = (head + 1) % BUFFER_LEN;
+
+      if (next == tail) {
+        // stop capturing
+        sampling_active = false;
+
+        // buffer full → send buffer
+        Serial.println("Capture completed, sending buffer...");
+        send_full_buffer();
+        Serial.println("Buffer sent succesfully");
+
+      } else {
+        // ---- compute sampling frequency ----
+        unsigned long now = millis();
+        float hz = 1000.0f / (now - prev_time);
+        prev_time = now;
+
+        sample_time[head] = hz;
+
+        // ---- capture frame ----
+        camera_fb_t *fb = esp_camera_fb_get();
+        extract_data_and_save_to_buffer(fb, head);
+        esp_camera_fb_return(fb);
+
+        // advance head ptr
+        head = next;
+      }
     } else {
-      
-      // ---- compute sampling frequency ----
-      unsigned long now = millis();
-      float hz = 1000.0f / (now - prev_time);
-      prev_time = now;
+      // accept chars from serial
+      if (Serial.available()) {
 
-      sample_time[head] = hz;
+        char command = Serial.read();
 
-      // ---- capture frame ----
-      camera_fb_t *fb = esp_camera_fb_get();
-      extract_data_and_save_to_buffer(fb, head);
-      esp_camera_fb_return(fb);
-
-      // advance head ptr
-      head = next;
+        if (command == 's') {
+          // Reset buffer pointers for a fresh start
+          head = 0;
+          tail = 0;
+          sampling_active = true;
+          Serial.println("Received 's'. Starting camera sampling now.");
+        }
+      }
     }
 
     // Wait until next fixed period
     vTaskDelayUntil(&last_wake_time, sample_period);
-  }
-}
-
-void streamLoop(void *pvParameters) {
-  while (true) {
-
-    if (head == tail) {
-      
-      // buffer empty => stall      
-      Serial.println("Empty buffer, skip");
-      vTaskDelay(WAIT_TIME_SEND_STALL);
-      continue;
-    }
-
-    // send frame
-    send_frame(tail, 1);
-
-    // increment tail ptr
-    tail = (tail + 1) % BUFFER_LEN;
   }
 }
 
@@ -263,14 +254,30 @@ void extract_data_and_save_to_buffer(camera_fb_t *fb, int current_index) {
  * Data transmit
  *****************************/
 
-void send_frame(int index, int frame_number) {
+void send_full_buffer() {
+
+  // Connect to PC
+  Serial.print("Connecting to host...");
+  while (!client.connect(HOST_IP, HOST_PORT)) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\nTCP connection established!");
+
+  for(int i = 0; i < BUFFER_LEN; i++) {
+    // send frame
+    send_frame(i);
+  }
+}
+
+void send_frame(int index) {
 
   if (!client.connected()) {
     client.connect(HOST_IP, HOST_PORT);
     if (!client.connected()) return;
   }
 
-  size_t chunk_size = frame_number * ROI_WIDTH * ROI_HEIGHT * sizeof(uint16_t);
+  size_t chunk_size =  ROI_WIDTH * ROI_HEIGHT * sizeof(uint16_t);
 
   // send frame
   client.write((uint8_t*)frames[index], chunk_size);

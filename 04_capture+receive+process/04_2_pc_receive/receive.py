@@ -13,7 +13,7 @@ ROI_WIDTH = 160
 ROI_HEIGHT = 120
 POINT_SIZE = 2  # RGB565 = 2 bytes
 FRAMES_PER_CHUNK = 1
-MAX_FRAMES = 500
+MAX_FRAMES = 99
 
 BASE_FILE_NAME = 'frames_rg_888'
 now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -112,7 +112,7 @@ def main():
             fs = np.frombuffer(fs_bytes, dtype=np.float32)[0]
 
             frames = np.frombuffer(frame_bytes, dtype=np.uint8)
-            frames = frames.reshape(FRAMES_PER_CHUNK, ROI_WIDTH, ROI_HEIGHT, POINT_SIZE)
+            frames = frames.reshape(FRAMES_PER_CHUNK, ROI_HEIGHT, ROI_WIDTH, POINT_SIZE)
 
             for i in range(FRAMES_PER_CHUNK):
                 rgb888 = rgb565_buffer_to_rgb888_pad_BE(frames[i])

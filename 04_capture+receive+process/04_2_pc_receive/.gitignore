@@ -1,4 +1,5 @@
-frames_rg_888_160w-120h_20251128_160405.npy
-
+*.npy
+*.mp4
+*.csv
 *.png
 *.bin
